@@ -12,7 +12,46 @@ except:
     import gdal, osr
 import numpy as np
 
-def apply_cloud_mask(image_filename, scl_mask_filename, maskVals, outpath):
+def save_masked_file(masked_image_matrix, uint8, outpath, metadata, geoTrans, srs):
+    print(f'Creating output file: {outpath}')
+    [bands, rows, cols] = masked_image_matrix.shape
+    
+    # Determine output data type
+    if uint8:
+        outGDType = gdal.GDT_Byte
+    elif masked_image_matrix.dtype == np.uint16: 
+        outGDType = gdal.GDT_UInt16
+    elif masked_image_matrix.dtype == np.float32:
+        outGDType = gdal.GDT_Float32
+    
+    # Creat output file
+    driver = gdal.GetDriverByName('GTiff')
+    outraster_ds = driver.Create(outpath, cols, rows, bands, outGDType, options=['COMPRESS=LZW'])
+    outraster_ds.SetGeoTransform(geoTrans)
+    outraster_ds.SetProjection(srs.ExportToWkt())
+    outraster_ds.SetMetadata(metadata)
+
+    if uint8:
+        if masked_image_matrix.dtype == np.uint16:
+            masked_image_matrix = 255.0 * masked_image_matrix.astype(np.float32) / 10000.0
+        else:
+            masked_image_matrix = 255.0 * masked_image_matrix
+        masked_image_matrix[masked_image_matrix < 0.0] = 0.0
+        masked_image_matrix[masked_image_matrix > 255.0] = 255.0
+
+    for i, band in enumerate(masked_image_matrix, start = 1):
+        print(f'Writing band {i} of {bands}.')
+        outraster_ds.GetRasterBand(i).WriteArray(band)
+
+    print('Output file saved to disk.') 
+
+    # Clear up memory
+
+    outraster_ds = None   
+    band = None
+    masked_image_matrix = None
+
+def apply_cloud_mask(image_filename, scl_mask_filename, maskVals):
     # open SCL mask file and create mask 
     print(f'Opening SCL mask file: {scl_mask_filename}')
     SCL_ds = gdal.Open(scl_mask_filename)
@@ -28,36 +67,30 @@ def apply_cloud_mask(image_filename, scl_mask_filename, maskVals, outpath):
     if not 1 in np.unique(mask):
         print('ERROR: No good mask pixels. Exiting.')
         sys.exit()
+    
     # open image file and create masked data array 
     print(f'Opening image mask file: {image_filename}')
     image_ds = gdal.Open(image_filename)
     metadata = image_ds.GetMetadata()
     bands = image_ds.RasterCount
     band = image_ds.GetRasterBand(1).ReadAsArray()
-    # masked_image_matrix = np.zeros((rows, cols, bands), dtype = type(band.dtype))
-    if band.dtype == np.uint16:
-        outGDType = gdal.GDT_UInt16
-    elif band.dtype == np.float32:
-        outGDType = gdal.GDT_Float32
-    print(f'Creating output file: {outpath}')
-    driver = gdal.GetDriverByName('GTiff')
-    masked_image_matrix = driver.Create(outpath, cols, rows, bands, outGDType, options=['COMPRESS=LZW'])
-    masked_image_matrix.SetGeoTransform(geoTrans)
-    masked_image_matrix.SetProjection(srs.ExportToWkt())
-    masked_image_matrix.SetMetadata(metadata)
+    bandList = [] # Initialize empty band list
+    
     for i in range(bands):
         print(f'Masking band {i + 1} of {bands}.')
         band = image_ds.GetRasterBand(i + 1).ReadAsArray() 
         band = band * mask.astype(type(band.dtype))
-        masked_image_matrix.GetRasterBand(i + 1).WriteArray(band)
-    print('Masking complete.')    
+        bandList.append(band)
+    masked_image_matrix = np.stack(bandList)
+
+    print('Masking complete.')   
+    # free up memory 
     SCL_ds = None
     scldata = None
     mask = None   
-    image_ds = None
     band = None
-    masked_image_matrix = None
-    # Your code here
+    bandList = None
+    return masked_image_matrix, metadata, geoTrans, srs
 
 def WarpMGRS(safefile, datasettype, outputdir, *args, **kwargs):
     # This function imports Sentinel-2 L2A SAFE data to 10 a 10m dataset
@@ -126,13 +159,10 @@ def WarpMGRS(safefile, datasettype, outputdir, *args, **kwargs):
     gdal.BuildVRT(out_vrt, srlist, separate = True)
     if prjstr:  
         projacronym = prjstr.split(':')[1]
-        # outputdir = f'{dirname}_{projacronym}'
         projdir = os.path.join(outputdir, projacronym)
         if not os.path.isdir(projdir):
             os.makedirs(projdir)
         print(f'Bands stacked. Warping to {prjstr}.')    
-        # options = gdal.WarpOptions(format = 'ENVI', dstSRS = prjstr,
-                                      # resampleAlg = 'bilinear')
         outputfile = os.path.join(projdir, f'{ProductID}.tif')
         outSCLfile = os.path.join(projdir, f'{ProductID}_SCL.tif')
         gdal.Warp(outputfile, 
@@ -156,7 +186,8 @@ def main(infile = None, maskfile = None, safefile = None, outpath = None, \
         vegetation = True, not_vegetated = True, unclassified = True, \
         no_data = False, saturated_or_defective = False, dark_area_pixels = False, \
         cloud_shadows = False, water = False, cloud_medium_probability = False, \
-        cloud_high_probability = False, thin_cirrus = False, snow = False, datasettype = 'Sentinel-2', prjstr = None):
+        cloud_high_probability = False, thin_cirrus = False, snow = False, \
+        datasettype = 'Sentinel-2', prjstr = None, uint8 = True):
     startTime = datetime.datetime.now()
     
     if outpath.endswith('.tif'):
@@ -212,8 +243,11 @@ def main(infile = None, maskfile = None, safefile = None, outpath = None, \
         if classes[i]:
             print(f'Adding class to good pixel mask: {classnames[i]}')
             maskVals.append(i)
-    apply_cloud_mask(infile, maskfile, maskVals, outpath)
-    
+    masked_image_matrix, metadata, geoTrans, srs = apply_cloud_mask(infile, maskfile, maskVals)
+    [bands, rows, cols] = masked_image_matrix.shape
+    print(f'Masked image matrix dimensions: {bands} bands, {rows} rows, {cols} columns.')
+    save_masked_file(masked_image_matrix, uint8, outpath, metadata, geoTrans, srs)
+
     executionTime = round((datetime.datetime.now() - startTime).seconds, 2)
     print(f'Total time: {executionTime} seconds')
     print('Processing complete.')
@@ -240,6 +274,7 @@ if __name__ == '__main__':
     parser.add_argument('--S2TM', action = 'store_true', help = 'Process only equivalent Landsat 4-5/ Landsat 7 ETM+ bands.')
     parser.add_argument('--S2OLI', action = 'store_true', help = 'Process only equivalent Landsat 8-9 OLI bands (overrides --S2TM).')
     parser.add_argument('--prjstr', default = None, type = str, help = 'If set, will warp Sentinel-2 SAFE data to the specified EPSG projection, e.g., "EPSG:2172" for Irish Transverse Mercator. This must be formatted "EPSG:XXXXX", where "XXXXX" denotes the EPSG projection code.')
+    parser.add_argument('--uint8', default = True, type = bool, help = 'Save output as unsigned 8-bit (byte) data. Default = True.')
     args = parser.parse_args()
     
     if args.S2OLI:
@@ -253,4 +288,4 @@ if __name__ == '__main__':
     main(args.infile, args.maskfile, args.safefile, args.outpath, \
         args.vegetation, args.not_vegetated, args.unclassified, args.no_data, args.saturated_or_defective, \
         args.dark_area_pixels, args.cloud_shadows, args.water, args.cloud_medium_probability, \
-        args.cloud_high_probability, args.thin_cirrus, args.snow, datasettype, args.prjstr)
+        args.cloud_high_probability, args.thin_cirrus, args.snow, datasettype, args.prjstr, args.uint8)

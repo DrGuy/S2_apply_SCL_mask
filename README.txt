@@ -10,6 +10,19 @@ By default, SCL pixels classified as "vegetation", "not_vegetated", and "unclass
 are not to be masked, but these and other classes can be included or excluded via the use of boolean command line 
 arguments detailed below.
 
+This application may be run using two very similar, but different Python scripts from either command line or via Docker
+container. Both scripts use the same command line arguments, though the latter script allows the user the option of 
+saving data in 8 bit:
+
+1. S2_apply_SCL_mask.py: This script outputs a masked file that is of the same data type as the input data set 
+(Unsigned 16-bit integer or 32-bit float). This is the only version that will work with SAFE data. It also does not 
+create the masked_image_matrix, instead saving output data on a band basis to disk in a stacked multiband and LZW-
+compressed GeoTiff file. 
+
+2. S2_apply_SCL_mask_v2.py: By default, this file creates both the masked_image_matrix array and then saves it to an
+8-bit stacked multiband and LZW-compressed GeoTiff file. This version will likely fail on most SAFE data files due to
+excessive memory issues.
+
 This application can be run via two methods:
 
 1. Python script. This requires a recent version Python 3, and GDAL (>= 2.1) and Numpy python libraries. GDAL and numpy
@@ -28,7 +41,7 @@ This application can be run via two methods:
 		
 		Unzipped SAFE data:
 			python S2_apply_SCL_mask.py \
-				--safefile <path_to_SAFE_folder_or_MTD_MSIL2A.xml> \
+				--safefile <path_to_SAFE_folder_and_MTD_MSIL2A.xml> \
 				--outpath <path_to_output_folder_or_file>
 	
 
@@ -51,7 +64,7 @@ This application can be run via two methods:
 				-v "<local_path_for_output_data>:/app/output" \
 				drguyphd/s2_apply_scl_mask \
 				python S2_apply_SCL_mask.py \
-				--safefile <path_to_SAFE_folder_or_MTD_MSIL2A.xml> \
+				--safefile <path_to_SAFE_folder_and_MTD_MSIL2A.xml> \
 				--outpath <path_to_output_folder_or_file>
 
 usage: This script masks Sentinel-2 data using the SCL mask file. [-h] [-i INFILE] [-m MASKFILE] [-s SAFEFILE] -o
@@ -66,7 +79,7 @@ usage: This script masks Sentinel-2 data using the SCL mask file. [-h] [-i INFIL
                                                                   [--thin_cirrus THIN_CIRRUS] [--snow SNOW] [--S2TM]
                                                                   [--S2OLI] [--prjstr PRJSTR]
 
-optional arguments:
+optional arguments (both scripts):
   -h, --help            show this help message and exit
   -i INFILE, --infile INFILE
                         Full path of image file to be masked.
@@ -104,3 +117,15 @@ optional arguments:
   --prjstr PRJSTR       If set, will warp Sentinel-2 SAFE data to the specified EPSG projection, e.g., "EPSG:2172" for
                         Irish Transverse Mercator. This must be formatted "EPSG:XXXXX", where "XXXXX" denotes the EPSG
                         projection code.
+
+S2_apply_SCL_mask_v2.py ONLY:
+  --uint8 UINT8			Save output as unsigned 8-bit (byte) data. Default = True.
+  
+
+KNOWN BUGS:
+
+	1. 	When using --safefile, the full path including MTD_MSIL2A.xml must be used.
+	2. 	The scripts do not support zipped SAFE files yet.
+	3. 	GDAL does not properly scale data in 8-bit, resulting in only even numbered values. This appears to be an 
+		internal bug in gdal, with similar results when converting data using gdal_translate directly from the 
+		command line.
